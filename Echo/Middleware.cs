@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Buffers;
-using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -26,55 +24,79 @@ namespace Echo
 
         public async Task Invoke(HttpContext httpContext)
         {
-            StringBuilder text = new StringBuilder($"{Environment.NewLine}");
-            text.Append($"LocalIpAddress{Environment.NewLine}\t{httpContext.Connection.LocalIpAddress}{Environment.NewLine}");
-            text.Append($"RemoteIpAddress{Environment.NewLine}\t{httpContext.Connection.RemoteIpAddress}{Environment.NewLine}");
-            text.Append($"RequestTime{Environment.NewLine}\t{DateTime.Now:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}");
-            text.Append($"RequestMethod{Environment.NewLine}\t{httpContext.Request.Method}{Environment.NewLine}");
-            text.Append($"RequestPath{Environment.NewLine}\t{httpContext.Request.Path}{Environment.NewLine}");
-            text.Append($"RequestQueryString{Environment.NewLine}\t{httpContext.Request.QueryString}{Environment.NewLine}");
-            text.Append($"RequestScheme{Environment.NewLine}\t{httpContext.Request.Scheme}{Environment.NewLine}");
-
-            if (httpContext.Request.Headers != null && httpContext.Request.Headers.Any())
+            try
             {
-                text.Append($"Headers:{Environment.NewLine}");
-                foreach (var header in httpContext.Request.Headers)
+                StringBuilder text = new StringBuilder();
+                text.AppendLine($"LocalIpAddress{Environment.NewLine}\t{httpContext.Connection.LocalIpAddress}");
+                text.AppendLine($"RemoteIpAddress{Environment.NewLine}\t{httpContext.Connection.RemoteIpAddress}");
+                text.AppendLine($"RequestTime{Environment.NewLine}\t{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                text.AppendLine($"RequestMethod{Environment.NewLine}\t{httpContext.Request.Method}");
+                text.AppendLine($"RequestPath{Environment.NewLine}\t{httpContext.Request.Path}");
+                text.AppendLine($"RequestQueryString{Environment.NewLine}\t{httpContext.Request.QueryString}");
+                text.AppendLine($"RequestScheme{Environment.NewLine}\t{httpContext.Request.Scheme}");
+
+                if (httpContext.Request.Headers != null && httpContext.Request.Headers.Any())
                 {
-                    text.Append($"\t{header.Key}={header.Value}{Environment.NewLine}");
+                    text.AppendLine($"Headers:");
+                    foreach (var header in httpContext.Request.Headers)
+                    {
+                        text.AppendLine($"\t{header.Key}={header.Value}");
+                    }
+                }
+
+                if (httpContext.Request.Cookies != null && httpContext.Request.Cookies.Any())
+                {
+                    text.AppendLine($"Cookie:");
+                    foreach (var cookie in httpContext.Request.Cookies)
+                    {
+                        text.AppendLine($"\t{cookie.Key}={cookie.Value}");
+                    }
+                }
+
+                if (httpContext.Request.ContentType != null
+                    && httpContext.Request.ContentType.Contains("form", StringComparison.OrdinalIgnoreCase)
+                    && httpContext.Request.Form != null
+                    && httpContext.Request.Form.Any())
+                {
+                    text.AppendLine($"Form:");
+                    foreach (var item in httpContext.Request.Form)
+                    {
+                        text.AppendLine($"\t{item.Key}={item.Value}");
+                    }
+                }
+
+                httpContext.Request.EnableBuffering();
+
+                await httpContext.Response.BodyWriter.WriteAsync(Encoding.UTF8.GetBytes(text.ToString()));
+
+                while (true)
+                {
+                    var readResult = await httpContext.Request.BodyReader.ReadAsync();
+
+                    if (readResult.IsCompleted)
+                    {
+                        break;
+                    }
+
+                    text.Append(GetString(readResult.Buffer));
+
+                    await httpContext.Response.BodyWriter.WriteAsync(readResult.Buffer.ToArray());
+
+                    httpContext.Request.BodyReader.AdvanceTo(readResult.Buffer.End);
+                }
+
+                _logger.LogInformation(text.ToString());
+
+                if (!httpContext.Response.HasStarted)
+                {
+                    await _next(httpContext);
                 }
             }
-
-            if (httpContext.Request.Cookies != null && httpContext.Request.Cookies.Any())
+            catch (Exception ex)
             {
-                text.Append($"Cookie:{Environment.NewLine}");
-                foreach (var cookie in httpContext.Request.Cookies)
-                {
-                    text.Append($"\t{cookie.Key}={cookie.Value}{Environment.NewLine}");
-                }
+                _logger.LogError(ex, "Error");
+                throw;
             }
-
-            if (httpContext.Request.ContentType != null
-                && httpContext.Request.ContentType.Contains("form", StringComparison.OrdinalIgnoreCase)
-                && httpContext.Request.Form != null
-                && httpContext.Request.Form.Any())
-            {
-                text.Append($"Form:{Environment.NewLine}");
-                foreach (var item in httpContext.Request.Form)
-                {
-                    text.Append($"\t{item.Key}={item.Value}{Environment.NewLine}");
-                }
-            }
-
-            var body = GetString((await httpContext.Request.BodyReader.ReadAsync()).Buffer);
-            if (!string.IsNullOrEmpty(body))
-            {
-                text.Append($"Body:{Environment.NewLine}");
-                text.Append(body);
-            }
-
-            _logger.LogInformation(text.ToString());
-            using Stream stream = new MemoryStream(Encoding.UTF8.GetBytes(text.ToString()));
-            await stream.CopyToAsync(httpContext.Response.Body);
         }
 
         private static string GetString(ReadOnlySequence<byte> buffer)
